@@ -321,16 +321,27 @@ async function resolveActiveCycle(): Promise<ActiveCycle> {
     });
   }
 
+  let effectiveDailyLimit = existing.dailyLimit;
+  if (existing.dailyLimit !== env.COLLECTION_DAILY_LIMIT) {
+    await prisma.collectionCycle.update({
+      where: { id: existing.id },
+      data: {
+        dailyLimit: env.COLLECTION_DAILY_LIMIT,
+      },
+    });
+    effectiveDailyLimit = env.COLLECTION_DAILY_LIMIT;
+  }
+
   const existingTargets = asStringArray(existing.targetCodesJson);
   if (!existingTargets || existingTargets.length !== existing.totalCompanies) {
-    return hydrateLegacyCycleTargets(existing.id, existing.dailyLimit);
+    return hydrateLegacyCycleTargets(existing.id, effectiveDailyLimit);
   }
 
   return {
     id: existing.id,
     totalCompanies: existing.totalCompanies,
     cursor: existing.cursor,
-    dailyLimit: existing.dailyLimit,
+    dailyLimit: effectiveDailyLimit,
     targetCodes: existingTargets,
   };
 }

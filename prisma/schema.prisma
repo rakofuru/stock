@@ -1,0 +1,200 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CollectionCycleStatus {
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+}
+
+enum CollectionJobType {
+  MASTER_LIST
+  FINANCIALS
+  PRICE
+  TEXT_BLOCKS
+}
+
+enum JobStatus {
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+enum ScreeningRunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model Company {
+  edinetCode         String            @id
+  secCode            String?
+  name               String
+  industry           String?
+  accountingStandard String?
+  creditScore        Int?
+  creditRating       String?
+  marketSegment      String            @default("UNKNOWN")
+  marketProductCategory String?
+  marketPriority     Int               @default(9)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  financials         Financial[]
+  pricesDaily        PriceDaily[]
+  textBlocks         TextBlock[]
+  screeningResults   ScreeningResult[]
+
+  @@index([marketPriority, edinetCode])
+}
+
+model Financial {
+  id                  Int      @id @default(autoincrement())
+  edinetCode          String
+  fiscalYear          Int
+  revenue             Float?
+  operatingIncome     Float?
+  ordinaryIncome      Float?
+  netIncome           Float?
+  totalAssets         Float?
+  netAssets           Float?
+  eps                 Float?
+  per                 Float?
+  roeOfficial         Float?
+  equityRatioOfficial Float?
+  bps                 Float?
+  dividendPerShare    Float?
+  cfOperating         Float?
+  cfInvesting         Float?
+  cfFinancing         Float?
+  cash                Float?
+  accountingStandard  String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  company             Company  @relation(fields: [edinetCode], references: [edinetCode], onDelete: Cascade)
+
+  @@unique([edinetCode, fiscalYear])
+  @@index([edinetCode, fiscalYear])
+}
+
+model PriceDaily {
+  id         Int      @id @default(autoincrement())
+  edinetCode String
+  date       DateTime
+  open       Float?
+  high       Float?
+  low        Float?
+  close      Float
+  volume     BigInt?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  company    Company  @relation(fields: [edinetCode], references: [edinetCode], onDelete: Cascade)
+
+  @@unique([edinetCode, date])
+  @@index([edinetCode, date])
+}
+
+model CollectionCycle {
+  id              String                @id @default(cuid())
+  status          CollectionCycleStatus @default(RUNNING)
+  startedAt       DateTime              @default(now())
+  endedAt         DateTime?
+  cursor          Int                   @default(0)
+  totalCompanies  Int                   @default(0)
+  processedCount  Int                   @default(0)
+  dailyLimit      Int                   @default(980)
+  lastError       String?
+  prioritySummary String?
+  targetCodesJson Json?
+  jobs            CollectionJob[]
+}
+
+model CollectionJob {
+  id            String            @id @default(cuid())
+  cycleId       String
+  edinetCode    String?
+  jobType       CollectionJobType
+  status        JobStatus
+  requestSource String            @default("EDINET")
+  attempt       Int               @default(1)
+  httpStatus    Int?
+  errorMessage  String?
+  createdAt     DateTime          @default(now())
+  cycle         CollectionCycle   @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@index([cycleId, createdAt])
+  @@index([requestSource, createdAt])
+}
+
+model ScreeningRun {
+  id          String             @id @default(cuid())
+  status      ScreeningRunStatus @default(RUNNING)
+  startedAt   DateTime           @default(now())
+  endedAt     DateTime?
+  weightsJson Json?
+  summaryJson Json?
+  results     ScreeningResult[]
+}
+
+model ScreeningResult {
+  id           String       @id @default(cuid())
+  runId        String
+  edinetCode   String
+  gatePassed   Boolean
+  score        Float
+  coverage     Float
+  pendingCount Int
+  criteriaJson Json
+  metricsJson  Json
+  createdAt    DateTime     @default(now())
+  run          ScreeningRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  company      Company      @relation(fields: [edinetCode], references: [edinetCode], onDelete: Cascade)
+
+  @@unique([runId, edinetCode])
+  @@index([runId, score])
+}
+
+model SamAssumption {
+  id             String   @id @default(cuid())
+  industry       String   @unique
+  sam            Float
+  assumedShare   Float
+  futureMultiple Float
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model RiskKeyword {
+  id        String   @id @default(cuid())
+  keyword   String   @unique
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TextBlock {
+  id         String   @id @default(cuid())
+  edinetCode String
+  fiscalYear Int?
+  section    String
+  text       String
+  fetchedAt  DateTime @default(now())
+  company    Company  @relation(fields: [edinetCode], references: [edinetCode], onDelete: Cascade)
+
+  @@unique([edinetCode, fiscalYear, section])
+  @@index([edinetCode])
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+

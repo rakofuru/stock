@@ -6,7 +6,7 @@ EDINET DB API と Stooq を使って、全上場企業の財務情報を4日で�
 
 - Frontend/API: Next.js (App Router, TypeScript)
 - DB: PostgreSQL + Prisma
-- 収集ワーカー: node-cron (`Asia/Tokyo`, 毎日 12:00 JST)
+- 収集ワーカー: node-cron (`Asia/Tokyo`, 毎日 00:05 JST / 12:00 JST)
 - 財務データ: EDINET DB API
 - 価格履歴(5年): Stooq
 
@@ -35,9 +35,15 @@ npm run dev
 DATABASE_URL="postgresql://stock:stockpass@localhost:5433/stockdb?schema=public"
 SQLITE_DATABASE_URL="file:./dev.db"
 EDINET_API_KEY="YOUR_EDINET_API_KEY"
+# 複数キー運用（推奨）
+EDINET_API_KEY_1="YOUR_EDINET_API_KEY_1"
+EDINET_API_KEY_2="YOUR_EDINET_API_KEY_2"
 EDINET_BASE_URL="https://edinetdb.jp/v1"
-COLLECTION_DAILY_LIMIT="1020"
+# 未指定時は「キー本数 x 1000 + 20」を自動設定
+COLLECTION_DAILY_LIMIT="2020"
 ```
+
+`EDINET_API_KEY_1` / `EDINET_API_KEY_2` を設定すると、API呼び出しはキーを順番にローテーションし、片方が429到達したらもう片方へ自動切替します。
 
 ## 既存SQLiteからの移行
 
@@ -66,8 +72,9 @@ Vercelに最低限必要なEnvironment Variables:
 
 - `DATABASE_URL`（本番DBの接続URL）
 - `EDINET_API_KEY`
+- `EDINET_API_KEY_1`, `EDINET_API_KEY_2`（2キー運用時）
 - `EDINET_BASE_URL=https://edinetdb.jp/v1`
-- `COLLECTION_DAILY_LIMIT=1020`
+- `COLLECTION_DAILY_LIMIT=2020`（2キーで1日2,000リクエスト運用の場合）
 
 ## 主要コマンド
 

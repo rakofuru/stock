@@ -9,6 +9,8 @@ import { getJstDayBounds } from "@/lib/time";
 import type { CollectionRunSummary } from "@/lib/types";
 
 const RESERVED_BUFFER = 20;
+const MONITOR_WINDOW_HOURS = 24;
+const STALL_THRESHOLD_MS = 3 * 60 * 60 * 1000;
 
 interface RunCollectionOptions {
   maxCompanies?: number;
@@ -653,21 +655,93 @@ export async function getCollectionStatus() {
   });
 
   const { end: resetAt } = getJstDayBounds();
-  const todayCount = await countTodayFinancialRequests();
-  const remainingToday = cycle ? Math.max(0, cycle.dailyLimit - todayCount - RESERVED_BUFFER) : env.COLLECTION_DAILY_LIMIT;
+  const monitorWindowStart = new Date(Date.now() - MONITOR_WINDOW_HOURS * 60 * 60 * 1000);
+  const [todayCount, failures, failuresInWindow, rateLimitInWindow, latestFailure, latestSuccessFinancial] =
+    await Promise.all([
+      countTodayFinancialRequests(),
+      prisma.collectionJob.findMany({
+        where: { status: "FAILED" },
+        orderBy: { createdAt: "desc" },
+        take: 8,
+        select: {
+          createdAt: true,
+          edinetCode: true,
+          jobType: true,
+          errorMessage: true,
+          httpStatus: true,
+        },
+      }),
+      prisma.collectionJob.count({
+        where: {
+          status: "FAILED",
+          createdAt: {
+            gte: monitorWindowStart,
+          },
+        },
+      }),
+      prisma.collectionJob.count({
+        where: {
+          status: "FAILED",
+          httpStatus: 429,
+          createdAt: {
+            gte: monitorWindowStart,
+          },
+        },
+      }),
+      prisma.collectionJob.findFirst({
+        where: {
+          status: "FAILED",
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        select: {
+          createdAt: true,
+          edinetCode: true,
+          jobType: true,
+          httpStatus: true,
+          errorMessage: true,
+        },
+      }),
+      prisma.collectionJob.findFirst({
+        where: {
+          status: "SUCCESS",
+          jobType: "FINANCIALS",
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        select: {
+          createdAt: true,
+          edinetCode: true,
+        },
+      }),
+    ]);
 
-  const failures = await prisma.collectionJob.findMany({
-    where: { status: "FAILED" },
-    orderBy: { createdAt: "desc" },
-    take: 8,
-    select: {
-      createdAt: true,
-      edinetCode: true,
-      jobType: true,
-      errorMessage: true,
-      httpStatus: true,
-    },
-  });
+  const remainingToday = cycle ? Math.max(0, cycle.dailyLimit - todayCount - RESERVED_BUFFER) : env.COLLECTION_DAILY_LIMIT;
+  const latestSuccessfulAt = latestSuccessFinancial?.createdAt ?? null;
+  const staleReference = latestSuccessfulAt ?? cycle?.startedAt ?? null;
+  const stalled = cycle?.status === "RUNNING" && staleReference != null ? Date.now() - staleReference.getTime() > STALL_THRESHOLD_MS : false;
+
+  let monitorLevel: "OK" | "WARN" | "ERROR" = "OK";
+  let monitorMessage = "収集ジョブは正常です。";
+
+  if (!cycle) {
+    monitorLevel = "WARN";
+    monitorMessage = "収集サイクルが未開始です。";
+  } else if (cycle.status === "FAILED" || stalled) {
+    monitorLevel = "ERROR";
+    monitorMessage = stalled ? "収集が停止している可能性があります。ログを確認して再開してください。" : "収集サイクルが失敗しています。";
+  } else if (cycle.status === "PAUSED") {
+    monitorLevel = "WARN";
+    monitorMessage = "収集は一時停止中です。";
+  } else if (rateLimitInWindow > 0) {
+    monitorLevel = "WARN";
+    monitorMessage = "直近24時間で429が発生しています。次回リセット後に再開してください。";
+  } else if (failuresInWindow > 0) {
+    monitorLevel = "WARN";
+    monitorMessage = "直近24時間に失敗ジョブがあります。";
+  }
 
   if (!cycle) {
     return {
@@ -681,6 +755,24 @@ export async function getCollectionStatus() {
       estimatedCompletionDayJst: getJstDayBounds().dayKey,
       nextResetAt: resetAt.toISOString(),
       failures,
+      monitor: {
+        level: monitorLevel,
+        message: monitorMessage,
+        keyCount: env.EDINET_API_KEYS.length,
+        stalled,
+        failuresInWindow,
+        rateLimitInWindow,
+        latestSuccessfulAt: latestSuccessfulAt?.toISOString() ?? null,
+        latestFailure: latestFailure
+          ? {
+              createdAt: latestFailure.createdAt.toISOString(),
+              edinetCode: latestFailure.edinetCode,
+              jobType: latestFailure.jobType,
+              httpStatus: latestFailure.httpStatus,
+              errorMessage: latestFailure.errorMessage,
+            }
+          : null,
+      },
     };
   }
 
@@ -703,5 +795,23 @@ export async function getCollectionStatus() {
     estimatedCompletionDayJst,
     nextResetAt: resetAt.toISOString(),
     failures,
+    monitor: {
+      level: monitorLevel,
+      message: monitorMessage,
+      keyCount: env.EDINET_API_KEYS.length,
+      stalled,
+      failuresInWindow,
+      rateLimitInWindow,
+      latestSuccessfulAt: latestSuccessfulAt?.toISOString() ?? null,
+      latestFailure: latestFailure
+        ? {
+            createdAt: latestFailure.createdAt.toISOString(),
+            edinetCode: latestFailure.edinetCode,
+            jobType: latestFailure.jobType,
+            httpStatus: latestFailure.httpStatus,
+            errorMessage: latestFailure.errorMessage,
+          }
+        : null,
+    },
   };
 }

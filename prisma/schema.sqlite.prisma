@@ -151,6 +151,11 @@ model ScreeningResult {
   score        Float
   coverage     Float
   pendingCount Int
+  marketCapEst Float?
+  pbrEst       Float?
+  priceToSales Float?
+  netCash      Float?
+  maxDrawdownPct Float?
   criteriaJson Json
   metricsJson  Json
   createdAt    DateTime     @default(now())
@@ -159,6 +164,13 @@ model ScreeningResult {
 
   @@unique([runId, edinetCode])
   @@index([runId, score])
+  @@index([runId, gatePassed])
+  @@index([runId, coverage])
+  @@index([runId, pendingCount])
+  @@index([runId, pbrEst])
+  @@index([runId, priceToSales])
+  @@index([runId, netCash])
+  @@index([runId, maxDrawdownPct])
 }
 
 model SamAssumption {

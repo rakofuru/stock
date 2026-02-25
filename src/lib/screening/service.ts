@@ -357,6 +357,11 @@ export async function runScreening(options: RunScreeningOptions = {}) {
         score: scoreData.score,
         coverage: scoreData.coverage,
         pendingCount: scoreData.pendingCount,
+        marketCapEst,
+        pbrEst,
+        priceToSales,
+        netCash,
+        maxDrawdownPct: metrics.maxDrawdownPct,
         criteriaJson: evaluations as unknown as Prisma.InputJsonValue,
         metricsJson: metrics as unknown as Prisma.InputJsonValue,
       },
@@ -394,6 +399,68 @@ export async function runScreening(options: RunScreeningOptions = {}) {
   };
 }
 
+function numberRangeFilter(min?: number, max?: number): Prisma.FloatFilter | undefined {
+  if (min == null && max == null) {
+    return undefined;
+  }
+  return {
+    gte: min,
+    lte: max,
+  };
+}
+
+function nullableNumberRangeFilter(min?: number, max?: number): Prisma.FloatNullableFilter | undefined {
+  if (min == null && max == null) {
+    return undefined;
+  }
+  return {
+    gte: min,
+    lte: max,
+  };
+}
+
+function intRangeFilter(min?: number, max?: number): Prisma.IntFilter | undefined {
+  if (min == null && max == null) {
+    return undefined;
+  }
+  return {
+    gte: min,
+    lte: max,
+  };
+}
+
+function normalizeIndustryFilters(industries?: string[]) {
+  if (!industries) {
+    return [];
+  }
+  const unique = new Set<string>();
+  for (const industry of industries) {
+    const normalized = industry.trim();
+    if (normalized) {
+      unique.add(normalized);
+    }
+  }
+  return [...unique];
+}
+
+function buildOrderBy(filter: LatestScreeningFilter): Prisma.ScreeningResultOrderByWithRelationInput[] {
+  const sortOrder = filter.sortOrder;
+
+  switch (filter.sortBy) {
+    case "coverage":
+      return [{ coverage: sortOrder }, { score: "desc" }, { company: { name: "asc" } }];
+    case "pendingCount":
+      return [{ pendingCount: sortOrder }, { score: "desc" }, { company: { name: "asc" } }];
+    case "companyName":
+      return [{ company: { name: sortOrder } }, { score: "desc" }];
+    case "gatePassed":
+      return [{ gatePassed: sortOrder }, { score: "desc" }, { company: { name: "asc" } }];
+    case "score":
+    default:
+      return [{ score: sortOrder }, { company: { name: "asc" } }];
+  }
+}
+
 export async function getLatestScreening(filter: LatestScreeningFilter) {
   const run = await prisma.screeningRun.findFirst({
     where: { status: "COMPLETED" },
@@ -416,145 +483,110 @@ export async function getLatestScreening(filter: LatestScreeningFilter) {
     };
   }
 
-  const rows = await prisma.screeningResult.findMany({
-    where: { runId: run.id },
-    include: {
-      company: true,
-    },
-  });
+  const industries = normalizeIndustryFilters(filter.industries);
+  const query = filter.q?.trim();
+  const whereAnd: Prisma.ScreeningResultWhereInput[] = [{ runId: run.id }];
+
+  const scoreRange = numberRangeFilter(filter.minScore, filter.maxScore);
+  if (scoreRange) {
+    whereAnd.push({ score: scoreRange });
+  }
+
+  const coverageRange = numberRangeFilter(filter.minCoverage, filter.maxCoverage);
+  if (coverageRange) {
+    whereAnd.push({ coverage: coverageRange });
+  }
+
+  const pendingRange = intRangeFilter(filter.minPendingCount, filter.maxPendingCount);
+  if (pendingRange) {
+    whereAnd.push({ pendingCount: pendingRange });
+  }
+
+  const pbrRange = nullableNumberRangeFilter(filter.minPbr, filter.maxPbr);
+  if (pbrRange) {
+    whereAnd.push({ pbrEst: pbrRange });
+  }
+
+  const psrRange = nullableNumberRangeFilter(filter.minPsr, filter.maxPsr);
+  if (psrRange) {
+    whereAnd.push({ priceToSales: psrRange });
+  }
+
+  const netCashRange = nullableNumberRangeFilter(filter.minNetCash, filter.maxNetCash);
+  if (netCashRange) {
+    whereAnd.push({ netCash: netCashRange });
+  }
+
+  const drawdownRange = nullableNumberRangeFilter(filter.minDrawdownPct, filter.maxDrawdownPct);
+  if (drawdownRange) {
+    whereAnd.push({ maxDrawdownPct: drawdownRange });
+  }
+
+  if (typeof filter.gatePassed === "boolean") {
+    whereAnd.push({ gatePassed: filter.gatePassed });
+  }
+
+  if (industries.length > 0) {
+    whereAnd.push({
+      company: {
+        industry: {
+          in: industries,
+        },
+      },
+    });
+  }
+
+  if (query) {
+    whereAnd.push({
+      OR: [
+        { edinetCode: { contains: query, mode: "insensitive" } },
+        { company: { name: { contains: query, mode: "insensitive" } } },
+        { company: { secCode: { contains: query, mode: "insensitive" } } },
+      ],
+    });
+  }
+
+  const where: Prisma.ScreeningResultWhereInput = whereAnd.length === 1 ? whereAnd[0] : { AND: whereAnd };
+
+  const total = await prisma.screeningResult.count({ where });
+  const totalPages = total > 0 ? Math.ceil(total / filter.perPage) : 0;
+  const page = totalPages === 0 ? 1 : Math.min(Math.max(1, filter.page), totalPages);
+  const skip = (page - 1) * filter.perPage;
+
+  const [rows, facetRows] = await prisma.$transaction([
+    prisma.screeningResult.findMany({
+      where,
+      include: {
+        company: true,
+      },
+      orderBy: buildOrderBy(filter),
+      skip,
+      take: filter.perPage,
+    }),
+    prisma.company.findMany({
+      where: {
+        industry: { not: null },
+        screeningResults: {
+          some: {
+            runId: run.id,
+          },
+        },
+      },
+      select: {
+        industry: true,
+      },
+      distinct: ["industry"],
+      orderBy: {
+        industry: "asc",
+      },
+    }),
+  ]);
 
   const normalized = rows.map((row) => ({
     ...row,
     criteriaJson: row.criteriaJson as unknown as CriterionEvaluation[],
     metricsJson: row.metricsJson as unknown as ScreeningMetrics,
   }));
-
-  const industries = [...new Set(normalized.map((row) => row.company.industry).filter((value): value is string => !!value))].sort(
-    (a, b) => a.localeCompare(b, "ja-JP"),
-  );
-
-  const query = filter.q?.trim().toLowerCase() ?? "";
-  const industrySet = new Set((filter.industries ?? []).filter((value) => value.trim().length > 0));
-
-  const inRange = (value: number | null | undefined, min?: number, max?: number) => {
-    if (min == null && max == null) {
-      return true;
-    }
-    if (value == null || Number.isNaN(value)) {
-      return false;
-    }
-    if (min != null && value < min) {
-      return false;
-    }
-    if (max != null && value > max) {
-      return false;
-    }
-    return true;
-  };
-
-  const filtered = normalized.filter((row) => {
-    if (!inRange(row.score, filter.minScore, filter.maxScore)) {
-      return false;
-    }
-    if (!inRange(row.coverage, filter.minCoverage, filter.maxCoverage)) {
-      return false;
-    }
-    if (!inRange(row.pendingCount, filter.minPendingCount, filter.maxPendingCount)) {
-      return false;
-    }
-
-    if (typeof filter.gatePassed === "boolean" && row.gatePassed !== filter.gatePassed) {
-      return false;
-    }
-
-    if (industrySet.size > 0) {
-      const industry = row.company.industry ?? "";
-      if (!industrySet.has(industry)) {
-        return false;
-      }
-    }
-
-    if (query) {
-      const name = row.company.name.toLowerCase();
-      const secCode = row.company.secCode?.toLowerCase() ?? "";
-      const edinetCode = row.edinetCode.toLowerCase();
-      if (!name.includes(query) && !secCode.includes(query) && !edinetCode.includes(query)) {
-        return false;
-      }
-    }
-
-    if (!inRange(row.metricsJson.pbrEst, filter.minPbr, filter.maxPbr)) {
-      return false;
-    }
-    if (!inRange(row.metricsJson.priceToSales, filter.minPsr, filter.maxPsr)) {
-      return false;
-    }
-    if (!inRange(row.metricsJson.netCash, filter.minNetCash, filter.maxNetCash)) {
-      return false;
-    }
-    if (!inRange(row.metricsJson.maxDrawdownPct, filter.minDrawdownPct, filter.maxDrawdownPct)) {
-      return false;
-    }
-
-    return true;
-  });
-
-  const direction = filter.sortOrder === "asc" ? 1 : -1;
-
-  const compareNullable = (a: number | null | undefined, b: number | null | undefined) => {
-    if (a == null && b == null) {
-      return 0;
-    }
-    if (a == null) {
-      return 1;
-    }
-    if (b == null) {
-      return -1;
-    }
-    if (a === b) {
-      return 0;
-    }
-    return a < b ? -1 : 1;
-  };
-
-  filtered.sort((a, b) => {
-    let base = 0;
-    switch (filter.sortBy) {
-      case "coverage":
-        base = compareNullable(a.coverage, b.coverage);
-        break;
-      case "pendingCount":
-        base = compareNullable(a.pendingCount, b.pendingCount);
-        break;
-      case "companyName":
-        base = a.company.name.localeCompare(b.company.name, "ja-JP");
-        break;
-      case "gatePassed":
-        base = compareNullable(a.gatePassed ? 1 : 0, b.gatePassed ? 1 : 0);
-        break;
-      case "score":
-      default:
-        base = compareNullable(a.score, b.score);
-        break;
-    }
-
-    if (base !== 0) {
-      return base * direction;
-    }
-
-    const secondary = compareNullable(a.score, b.score);
-    if (secondary !== 0) {
-      return secondary * -1;
-    }
-
-    return a.company.name.localeCompare(b.company.name, "ja-JP");
-  });
-
-  const total = filtered.length;
-  const totalPages = total > 0 ? Math.ceil(total / filter.perPage) : 0;
-  const page = totalPages === 0 ? 1 : Math.min(Math.max(1, filter.page), totalPages);
-  const skip = (page - 1) * filter.perPage;
-  const paged = filtered.slice(skip, skip + filter.perPage);
 
   return {
     run,
@@ -565,9 +597,12 @@ export async function getLatestScreening(filter: LatestScreeningFilter) {
       totalPages,
     },
     facets: {
-      industries,
+      industries: facetRows
+        .map((row) => row.industry)
+        .filter((value): value is string => value != null)
+        .sort((a, b) => a.localeCompare(b, "ja-JP")),
     },
-    data: paged,
+    data: normalized,
   };
 }
 

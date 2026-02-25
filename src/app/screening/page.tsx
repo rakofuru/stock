@@ -8,10 +8,36 @@ const PER_PAGE_OPTIONS = [30, 50, 100, 300, 500] as const;
 const SORT_OPTIONS = [
   { value: "score", label: "スコア" },
   { value: "coverage", label: "評価率" },
-  { value: "pendingCount", label: "未評価件数" },
   { value: "companyName", label: "企業名" },
   { value: "gatePassed", label: "ゲート結果" },
 ] as const;
+
+type SortBy = (typeof SORT_OPTIONS)[number]["value"];
+
+interface FilterState {
+  minScore: string;
+  maxScore: string;
+  minCoverage: string;
+  maxCoverage: string;
+  minPbr: string;
+  maxPbr: string;
+  minPsr: string;
+  maxPsr: string;
+  minNetCash: string;
+  maxNetCash: string;
+  minDrawdownPct: string;
+  maxDrawdownPct: string;
+  perPage: number;
+  q: string;
+  industries: string[];
+  gate: "all" | "true" | "false";
+  sortBy: SortBy;
+  sortOrder: "asc" | "desc";
+}
+
+interface AppliedState extends FilterState {
+  page: number;
+}
 
 interface ScreeningRow {
   id: string;
@@ -46,6 +72,38 @@ interface ScreeningPayload {
   };
   data: ScreeningRow[];
 }
+
+interface RangeFilterFieldProps {
+  label: string;
+  minValue: string;
+  maxValue: string;
+  onMinValueChange: (value: string) => void;
+  onMaxValueChange: (value: string) => void;
+  step?: number;
+  min?: number;
+  max?: number;
+}
+
+const DEFAULT_FILTERS: FilterState = {
+  minScore: "0",
+  maxScore: "",
+  minCoverage: "",
+  maxCoverage: "",
+  minPbr: "",
+  maxPbr: "",
+  minPsr: "",
+  maxPsr: "",
+  minNetCash: "",
+  maxNetCash: "",
+  minDrawdownPct: "",
+  maxDrawdownPct: "",
+  perPage: 30,
+  q: "",
+  industries: [],
+  gate: "all",
+  sortBy: "score",
+  sortOrder: "desc",
+};
 
 function buildQuery(params: Record<string, string | number | string[] | undefined>) {
   const query = new URLSearchParams();
@@ -87,6 +145,44 @@ function formatCriterionField(value: number | string | null | undefined) {
     return formatNumber(value, 3);
   }
   return value;
+}
+
+function RangeFilterField({
+  label,
+  minValue,
+  maxValue,
+  onMinValueChange,
+  onMaxValueChange,
+  step,
+  min,
+  max,
+}: RangeFilterFieldProps) {
+  return (
+    <div className="range-field">
+      <span className="range-label">{label}</span>
+      <div className="range-input-pair">
+        <input
+          type="number"
+          value={minValue}
+          step={step}
+          min={min}
+          max={max}
+          onChange={(event) => onMinValueChange(event.target.value)}
+          placeholder="下限"
+        />
+        <span className="range-separator">~</span>
+        <input
+          type="number"
+          value={maxValue}
+          step={step}
+          min={min}
+          max={max}
+          onChange={(event) => onMaxValueChange(event.target.value)}
+          placeholder="上限"
+        />
+      </div>
+    </div>
+  );
 }
 
 function ScreeningDetailContent({ selected }: { selected: ScreeningRow }) {
@@ -174,7 +270,7 @@ function ScreeningDetailContent({ selected }: { selected: ScreeningRow }) {
                 <span className={badgeClass(criterion.status)}>{criterion.status}</span>
               </div>
               <p className="muted num break-word">
-                重み: {formatNumber(criterion.weight, 1)} / 値: {formatCriterionField(criterion.value)} / 基準:{" "}
+                重み: {formatNumber(criterion.weight, 1)} / 値: {formatCriterionField(criterion.value)} / 基準: {" "}
                 {formatCriterionField(criterion.threshold)}
               </p>
               {criterion.note ? <p className="muted break-word">{criterion.note}</p> : null}
@@ -195,58 +291,33 @@ export default function ScreeningPage() {
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-
-  const [filters, setFilters] = useState({
-    minScore: "0",
-    maxScore: "",
-    minCoverage: "",
-    maxCoverage: "",
-    minPendingCount: "",
-    maxPendingCount: "",
-    minPbr: "",
-    maxPbr: "",
-    minPsr: "",
-    maxPsr: "",
-    minNetCash: "",
-    maxNetCash: "",
-    minDrawdownPct: "",
-    maxDrawdownPct: "",
-    perPage: 30,
-    q: "",
-    industries: [] as string[],
-    gate: "all" as "all" | "true" | "false",
-    sortBy: "score" as (typeof SORT_OPTIONS)[number]["value"],
-    sortOrder: "desc" as "asc" | "desc",
-  });
-
-  const [applied, setApplied] = useState({
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const [applied, setApplied] = useState<AppliedState>({
     page: 1,
-    minScore: "0",
-    maxScore: "",
-    minCoverage: "",
-    maxCoverage: "",
-    minPendingCount: "",
-    maxPendingCount: "",
-    minPbr: "",
-    maxPbr: "",
-    minPsr: "",
-    maxPsr: "",
-    minNetCash: "",
-    maxNetCash: "",
-    minDrawdownPct: "",
-    maxDrawdownPct: "",
-    perPage: 30,
-    q: "",
-    industries: [] as string[],
-    gate: "all" as "all" | "true" | "false",
-    sortBy: "score" as (typeof SORT_OPTIONS)[number]["value"],
-    sortOrder: "desc" as "asc" | "desc",
+    ...DEFAULT_FILTERS,
   });
 
   const selected = useMemo(
     () => rows.find((row) => row.id === selectedId) ?? rows[0] ?? null,
     [rows, selectedId],
   );
+
+  function applyCurrentFilters(nextPage = 1) {
+    setApplied({
+      page: nextPage,
+      ...filters,
+    });
+    setMobileFilterOpen(false);
+  }
+
+  function resetFilters() {
+    setFilters(DEFAULT_FILTERS);
+    setApplied({
+      page: 1,
+      ...DEFAULT_FILTERS,
+    });
+    setMobileFilterOpen(false);
+  }
 
   async function fetchLatest() {
     setLoading(true);
@@ -259,8 +330,6 @@ export default function ScreeningPage() {
         maxScore: applied.maxScore,
         minCoverage: applied.minCoverage,
         maxCoverage: applied.maxCoverage,
-        minPendingCount: applied.minPendingCount,
-        maxPendingCount: applied.maxPendingCount,
         minPbr: applied.minPbr,
         maxPbr: applied.maxPbr,
         minPsr: applied.minPsr,
@@ -346,63 +415,26 @@ export default function ScreeningPage() {
     if (applied.industries.length > 0) {
       chips.push(`業種: ${applied.industries.length}件`);
     }
-    if (applied.gate !== "all") {
-      chips.push(`ゲート: ${applied.gate === "true" ? "通過のみ" : "未通過のみ"}`);
-    }
     if (applied.minScore || applied.maxScore) {
-      chips.push(`スコア: ${applied.minScore || "-"} - ${applied.maxScore || "-"}`);
+      chips.push(`スコア: ${applied.minScore || "-"} ~ ${applied.maxScore || "-"}`);
     }
     if (applied.minCoverage || applied.maxCoverage) {
-      chips.push(`評価率: ${applied.minCoverage || "-"} - ${applied.maxCoverage || "-"}`);
-    }
-    if (applied.minPendingCount || applied.maxPendingCount) {
-      chips.push(`未評価件数: ${applied.minPendingCount || "-"} - ${applied.maxPendingCount || "-"}`);
+      chips.push(`評価率: ${applied.minCoverage || "-"} ~ ${applied.maxCoverage || "-"}`);
     }
     if (applied.minPbr || applied.maxPbr) {
-      chips.push(`PBR: ${applied.minPbr || "-"} - ${applied.maxPbr || "-"}`);
+      chips.push(`PBR: ${applied.minPbr || "-"} ~ ${applied.maxPbr || "-"}`);
     }
     if (applied.minPsr || applied.maxPsr) {
-      chips.push(`PSR: ${applied.minPsr || "-"} - ${applied.maxPsr || "-"}`);
+      chips.push(`PSR: ${applied.minPsr || "-"} ~ ${applied.maxPsr || "-"}`);
     }
     if (applied.minNetCash || applied.maxNetCash) {
-      chips.push(`ネットキャッシュ: ${applied.minNetCash || "-"} - ${applied.maxNetCash || "-"}`);
+      chips.push(`ネットキャッシュ: ${applied.minNetCash || "-"} ~ ${applied.maxNetCash || "-"}`);
     }
     if (applied.minDrawdownPct || applied.maxDrawdownPct) {
-      chips.push(`ドローダウン(%): ${applied.minDrawdownPct || "-"} - ${applied.maxDrawdownPct || "-"}`);
+      chips.push(`ドローダウン(%): ${applied.minDrawdownPct || "-"} ~ ${applied.maxDrawdownPct || "-"}`);
     }
     return chips;
   }, [applied]);
-
-  function resetFilters() {
-    const baseFilters = {
-      minScore: "0",
-      maxScore: "",
-      minCoverage: "",
-      maxCoverage: "",
-      minPendingCount: "",
-      maxPendingCount: "",
-      minPbr: "",
-      maxPbr: "",
-      minPsr: "",
-      maxPsr: "",
-      minNetCash: "",
-      maxNetCash: "",
-      minDrawdownPct: "",
-      maxDrawdownPct: "",
-      perPage: 30,
-      q: "",
-      industries: [] as string[],
-      gate: "all" as const,
-      sortBy: "score" as (typeof SORT_OPTIONS)[number]["value"],
-      sortOrder: "desc" as "asc" | "desc",
-    };
-    setFilters(baseFilters);
-    setApplied({
-      page: 1,
-      ...baseFilters,
-    });
-    setMobileFilterOpen(false);
-  }
 
   return (
     <section className="three-pane">
@@ -411,100 +443,16 @@ export default function ScreeningPage() {
         className="button secondary mobile-filter-toggle"
         onClick={() => setMobileFilterOpen((prev) => !prev)}
       >
-        {mobileFilterOpen ? "絞り込みを閉じる" : "絞り込みを開く"}
+        {mobileFilterOpen ? "詳細条件を閉じる" : "詳細条件を開く"}
       </button>
 
       <aside className={`panel filter-panel ${mobileFilterOpen ? "open" : ""}`}>
-        <h2>絞り込み検索</h2>
+        <h2>詳細条件（上限 ~ 下限）</h2>
         <p className="muted" style={{ marginBottom: "0.6rem" }}>
-          スコア・業種・企業名・必須ゲートで候補を絞り込みます。
+          絞り込みの細かな数値条件を設定します。
         </p>
 
         <div className="page-grid">
-          <label>
-            企業名 / 証券コード / EDINETコード
-            <input
-              value={filters.q}
-              onChange={(e) => setFilters((prev) => ({ ...prev, q: e.target.value }))}
-              placeholder="例: 任天堂 / 7974 / E02367"
-            />
-          </label>
-
-          <div className="filter-grid-two">
-            <label>
-              1ページ表示件数
-              <select
-                value={filters.perPage}
-                onChange={(e) =>
-                  setFilters((prev) => ({
-                    ...prev,
-                    perPage: Number(e.target.value),
-                  }))
-                }
-              >
-                {PER_PAGE_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {formatNumber(option, 0)} 件
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              並び替え
-              <select
-                value={filters.sortBy}
-                onChange={(e) =>
-                  setFilters((prev) => ({
-                    ...prev,
-                    sortBy: e.target.value as (typeof SORT_OPTIONS)[number]["value"],
-                  }))
-                }
-              >
-                {SORT_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <div className="filter-grid-two">
-            <label>
-              並び順
-              <select
-                value={filters.sortOrder}
-                onChange={(e) =>
-                  setFilters((prev) => ({
-                    ...prev,
-                    sortOrder: e.target.value as "asc" | "desc",
-                  }))
-                }
-              >
-                <option value="desc">降順</option>
-                <option value="asc">昇順</option>
-              </select>
-            </label>
-
-            <label>
-              必須ゲート
-              <select
-                value={filters.gate}
-                onChange={(e) =>
-                  setFilters((prev) => ({
-                    ...prev,
-                    gate: e.target.value as "all" | "true" | "false",
-                  }))
-                }
-              >
-                <option value="all">すべて</option>
-                <option value="true">通過のみ</option>
-                <option value="false">未通過のみ</option>
-              </select>
-            </label>
-          </div>
-
           <div>
             <p className="muted" style={{ marginBottom: "0.35rem" }}>
               業種（複数選択）
@@ -533,200 +481,69 @@ export default function ScreeningPage() {
             </div>
           </div>
 
-          <div className="filter-grid-two">
-            <label>
-              スコア（下限）
-              <input
-                type="number"
-                min={0}
-                max={100}
-                value={filters.minScore}
-                onChange={(e) => setFilters((prev) => ({ ...prev, minScore: e.target.value }))}
-              />
-            </label>
-            <label>
-              スコア（上限）
-              <input
-                type="number"
-                min={0}
-                max={100}
-                value={filters.maxScore}
-                onChange={(e) => setFilters((prev) => ({ ...prev, maxScore: e.target.value }))}
-              />
-            </label>
-          </div>
+          <RangeFilterField
+            label="スコア"
+            minValue={filters.minScore}
+            maxValue={filters.maxScore}
+            min={0}
+            max={100}
+            onMinValueChange={(value) => setFilters((prev) => ({ ...prev, minScore: value }))}
+            onMaxValueChange={(value) => setFilters((prev) => ({ ...prev, maxScore: value }))}
+          />
 
-          <div className="filter-grid-two">
-            <label>
-              評価率（下限）
-              <input
-                type="number"
-                min={0}
-                max={100}
-                value={filters.minCoverage}
-                onChange={(e) => setFilters((prev) => ({ ...prev, minCoverage: e.target.value }))}
-              />
-            </label>
-            <label>
-              評価率（上限）
-              <input
-                type="number"
-                min={0}
-                max={100}
-                value={filters.maxCoverage}
-                onChange={(e) => setFilters((prev) => ({ ...prev, maxCoverage: e.target.value }))}
-              />
-            </label>
-          </div>
+          <RangeFilterField
+            label="評価率"
+            minValue={filters.minCoverage}
+            maxValue={filters.maxCoverage}
+            min={0}
+            max={100}
+            onMinValueChange={(value) => setFilters((prev) => ({ ...prev, minCoverage: value }))}
+            onMaxValueChange={(value) => setFilters((prev) => ({ ...prev, maxCoverage: value }))}
+          />
 
-          <div className="filter-grid-two">
-            <label>
-              未評価件数（下限）
-              <input
-                type="number"
-                min={0}
-                value={filters.minPendingCount}
-                onChange={(e) => setFilters((prev) => ({ ...prev, minPendingCount: e.target.value }))}
-              />
-            </label>
-            <label>
-              未評価件数（上限）
-              <input
-                type="number"
-                min={0}
-                value={filters.maxPendingCount}
-                onChange={(e) => setFilters((prev) => ({ ...prev, maxPendingCount: e.target.value }))}
-              />
-            </label>
-          </div>
+          <RangeFilterField
+            label="PBR"
+            minValue={filters.minPbr}
+            maxValue={filters.maxPbr}
+            step={0.01}
+            onMinValueChange={(value) => setFilters((prev) => ({ ...prev, minPbr: value }))}
+            onMaxValueChange={(value) => setFilters((prev) => ({ ...prev, maxPbr: value }))}
+          />
 
-          <div className="filter-grid-two">
-            <label>
-              PBR（下限）
-              <input
-                type="number"
-                step={0.01}
-                value={filters.minPbr}
-                onChange={(e) => setFilters((prev) => ({ ...prev, minPbr: e.target.value }))}
-              />
-            </label>
-            <label>
-              PBR（上限）
-              <input
-                type="number"
-                step={0.01}
-                value={filters.maxPbr}
-                onChange={(e) => setFilters((prev) => ({ ...prev, maxPbr: e.target.value }))}
-              />
-            </label>
-          </div>
+          <RangeFilterField
+            label="PSR"
+            minValue={filters.minPsr}
+            maxValue={filters.maxPsr}
+            step={0.01}
+            onMinValueChange={(value) => setFilters((prev) => ({ ...prev, minPsr: value }))}
+            onMaxValueChange={(value) => setFilters((prev) => ({ ...prev, maxPsr: value }))}
+          />
 
-          <div className="filter-grid-two">
-            <label>
-              PSR（下限）
-              <input
-                type="number"
-                step={0.01}
-                value={filters.minPsr}
-                onChange={(e) => setFilters((prev) => ({ ...prev, minPsr: e.target.value }))}
-              />
-            </label>
-            <label>
-              PSR（上限）
-              <input
-                type="number"
-                step={0.01}
-                value={filters.maxPsr}
-                onChange={(e) => setFilters((prev) => ({ ...prev, maxPsr: e.target.value }))}
-              />
-            </label>
-          </div>
+          <RangeFilterField
+            label="ネットキャッシュ"
+            minValue={filters.minNetCash}
+            maxValue={filters.maxNetCash}
+            onMinValueChange={(value) => setFilters((prev) => ({ ...prev, minNetCash: value }))}
+            onMaxValueChange={(value) => setFilters((prev) => ({ ...prev, maxNetCash: value }))}
+          />
 
-          <div className="filter-grid-two">
-            <label>
-              ネットキャッシュ（下限）
-              <input
-                type="number"
-                value={filters.minNetCash}
-                onChange={(e) => setFilters((prev) => ({ ...prev, minNetCash: e.target.value }))}
-              />
-            </label>
-            <label>
-              ネットキャッシュ（上限）
-              <input
-                type="number"
-                value={filters.maxNetCash}
-                onChange={(e) => setFilters((prev) => ({ ...prev, maxNetCash: e.target.value }))}
-              />
-            </label>
-          </div>
-
-          <div className="filter-grid-two">
-            <label>
-              最大ドローダウン%（下限）
-              <input
-                type="number"
-                step={0.1}
-                value={filters.minDrawdownPct}
-                onChange={(e) => setFilters((prev) => ({ ...prev, minDrawdownPct: e.target.value }))}
-              />
-            </label>
-            <label>
-              最大ドローダウン%（上限）
-              <input
-                type="number"
-                step={0.1}
-                value={filters.maxDrawdownPct}
-                onChange={(e) => setFilters((prev) => ({ ...prev, maxDrawdownPct: e.target.value }))}
-              />
-            </label>
-          </div>
+          <RangeFilterField
+            label="最大ドローダウン%"
+            minValue={filters.minDrawdownPct}
+            maxValue={filters.maxDrawdownPct}
+            step={0.1}
+            onMinValueChange={(value) => setFilters((prev) => ({ ...prev, minDrawdownPct: value }))}
+            onMaxValueChange={(value) => setFilters((prev) => ({ ...prev, maxDrawdownPct: value }))}
+          />
 
           <div className="row">
-            <button
-              className="button"
-              onClick={() => {
-                setApplied({
-                  page: 1,
-                  minScore: filters.minScore,
-                  maxScore: filters.maxScore,
-                  minCoverage: filters.minCoverage,
-                  maxCoverage: filters.maxCoverage,
-                  minPendingCount: filters.minPendingCount,
-                  maxPendingCount: filters.maxPendingCount,
-                  minPbr: filters.minPbr,
-                  maxPbr: filters.maxPbr,
-                  minPsr: filters.minPsr,
-                  maxPsr: filters.maxPsr,
-                  minNetCash: filters.minNetCash,
-                  maxNetCash: filters.maxNetCash,
-                  minDrawdownPct: filters.minDrawdownPct,
-                  maxDrawdownPct: filters.maxDrawdownPct,
-                  perPage: filters.perPage,
-                  q: filters.q,
-                  industries: filters.industries,
-                  gate: filters.gate,
-                  sortBy: filters.sortBy,
-                  sortOrder: filters.sortOrder,
-                });
-                setMobileFilterOpen(false);
-              }}
-            >
-              条件を適用
+            <button className="button" onClick={() => applyCurrentFilters(1)}>
+              詳細条件を適用
             </button>
             <button className="button secondary" onClick={resetFilters}>
               全解除
             </button>
-            <button className="button secondary" onClick={() => void fetchLatest()} disabled={loading}>
-              再読込
-            </button>
           </div>
-
-          <button className="button ghost" onClick={() => void runScreeningNow()} disabled={running}>
-            {running ? "再計算中..." : "スクリーニング再計算"}
-          </button>
-
-          {message ? <p className="muted break-word">{message}</p> : null}
         </div>
       </aside>
 
@@ -739,6 +556,98 @@ export default function ScreeningPage() {
             {formatNumber(totalPages, 0)} ページ
           </span>
         </div>
+
+        <div className="screening-toolbar-grid" style={{ marginTop: "0.65rem" }}>
+          <label className="toolbar-field-wide">
+            キーワード（企業名 / 証券コード / EDINETコード）
+            <input
+              value={filters.q}
+              onChange={(event) => setFilters((prev) => ({ ...prev, q: event.target.value }))}
+              placeholder="例: 任天堂 / 7974 / E02367"
+            />
+          </label>
+          <label>
+            表示件数
+            <select
+              value={filters.perPage}
+              onChange={(event) =>
+                setFilters((prev) => ({
+                  ...prev,
+                  perPage: Number(event.target.value),
+                }))
+              }
+            >
+              {PER_PAGE_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {formatNumber(option, 0)} 件
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            並び替え
+            <select
+              value={filters.sortBy}
+              onChange={(event) =>
+                setFilters((prev) => ({
+                  ...prev,
+                  sortBy: event.target.value as SortBy,
+                }))
+              }
+            >
+              {SORT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            並び順
+            <select
+              value={filters.sortOrder}
+              onChange={(event) =>
+                setFilters((prev) => ({
+                  ...prev,
+                  sortOrder: event.target.value as "asc" | "desc",
+                }))
+              }
+            >
+              <option value="desc">降順</option>
+              <option value="asc">昇順</option>
+            </select>
+          </label>
+          <label>
+            必須ゲート
+            <select
+              value={filters.gate}
+              onChange={(event) =>
+                setFilters((prev) => ({
+                  ...prev,
+                  gate: event.target.value as "all" | "true" | "false",
+                }))
+              }
+            >
+              <option value="all">すべて</option>
+              <option value="true">通過のみ</option>
+              <option value="false">未通過のみ</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="row screening-toolbar-actions" style={{ marginTop: "0.6rem" }}>
+          <button className="button" onClick={() => applyCurrentFilters(1)}>
+            条件を適用
+          </button>
+          <button className="button secondary" onClick={() => void fetchLatest()} disabled={loading}>
+            再読込
+          </button>
+          <button className="button ghost" onClick={() => void runScreeningNow()} disabled={running}>
+            {running ? "再計算中..." : "スクリーニング再計算"}
+          </button>
+        </div>
+
+        {message ? <p className="muted break-word" style={{ marginTop: "0.55rem" }}>{message}</p> : null}
 
         {appliedFilterChips.length > 0 ? (
           <div className="applied-chip-row" style={{ marginTop: "0.55rem" }}>
@@ -759,7 +668,6 @@ export default function ScreeningPage() {
                 <th>ゲート</th>
                 <th>スコア</th>
                 <th>評価率</th>
-                <th>未評価</th>
               </tr>
             </thead>
             <tbody>
@@ -772,8 +680,13 @@ export default function ScreeningPage() {
                   <td>
                     <div className="break-word">{row.company.name}</div>
                     <div className="muted num">
-                      {row.edinetCode}
-                      {row.company.secCode ? ` / ${row.company.secCode}` : ""}
+                      <span>{row.edinetCode}</span>
+                      <span> / </span>
+                      {row.company.secCode ? (
+                        <span>{row.company.secCode}</span>
+                      ) : (
+                        <span className="missing-sec-code">証券コード未登録</span>
+                      )}
                     </div>
                   </td>
                   <td className="break-word">{row.company.industry ?? "-"}</td>
@@ -784,7 +697,6 @@ export default function ScreeningPage() {
                   </td>
                   <td className="num">{formatNumber(row.score, 1)}</td>
                   <td className="num">{formatPercent(row.coverage, 1)}</td>
-                  <td className="num">{formatNumber(row.pendingCount, 0)}</td>
                 </tr>
               ))}
             </tbody>
@@ -814,15 +726,19 @@ export default function ScreeningPage() {
 
                 <div className="screening-mobile-inline-detail">
                   <p className="muted num break-word screening-mobile-meta">
-                    {row.edinetCode}
-                    {row.company.secCode ? ` / ${row.company.secCode}` : ""}
-                    {row.company.industry ? ` / ${row.company.industry}` : ""}
+                    <span>{row.edinetCode}</span>
+                    <span> / </span>
+                    {row.company.secCode ? (
+                      <span>{row.company.secCode}</span>
+                    ) : (
+                      <span className="missing-sec-code">証券コード未登録</span>
+                    )}
+                    {row.company.industry ? <span>{` / ${row.company.industry}`}</span> : null}
                   </p>
 
                   <div className="screening-mobile-metrics">
                     <span className="chip num">Score {formatNumber(row.score, 1)}</span>
                     <span className="chip num">Coverage {formatPercent(row.coverage, 1)}</span>
-                    <span className="chip num">Pending {formatNumber(row.pendingCount, 0)}</span>
                   </div>
 
                   <span className="screening-mobile-expand-hint">{isExpanded ? "詳細を閉じる" : "詳細を表示"}</span>
@@ -889,12 +805,7 @@ export default function ScreeningPage() {
           <button
             className="button secondary"
             disabled={!payload || payload.pagination.page <= 1}
-            onClick={() =>
-              setApplied((prev) => ({
-                ...prev,
-                page: 1,
-              }))
-            }
+            onClick={() => setApplied((prev) => ({ ...prev, page: 1 }))}
           >
             先頭
           </button>

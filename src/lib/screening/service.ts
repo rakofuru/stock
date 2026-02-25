@@ -25,10 +25,25 @@ interface RunScreeningOptions {
 interface LatestScreeningFilter {
   page: number;
   perPage: number;
-  minScore: number;
+  minScore?: number;
+  maxScore?: number;
+  minCoverage?: number;
+  maxCoverage?: number;
+  minPendingCount?: number;
+  maxPendingCount?: number;
+  minPbr?: number;
+  maxPbr?: number;
+  minPsr?: number;
+  maxPsr?: number;
+  minNetCash?: number;
+  maxNetCash?: number;
+  minDrawdownPct?: number;
+  maxDrawdownPct?: number;
   gatePassed?: boolean;
-  industry?: string;
+  industries?: string[];
   q?: string;
+  sortBy: "score" | "coverage" | "pendingCount" | "companyName" | "gatePassed";
+  sortOrder: "asc" | "desc";
 }
 
 function average(values: number[]): number | null {
@@ -394,57 +409,165 @@ export async function getLatestScreening(filter: LatestScreeningFilter) {
         total: 0,
         totalPages: 0,
       },
+      facets: {
+        industries: [],
+      },
       data: [],
     };
   }
 
-  const where: Prisma.ScreeningResultWhereInput = {
-    runId: run.id,
-    score: { gte: filter.minScore },
-  };
-
-  if (typeof filter.gatePassed === "boolean") {
-    where.gatePassed = filter.gatePassed;
-  }
-
-  const companyWhere: Prisma.CompanyWhereInput = {};
-  if (filter.industry) {
-    companyWhere.industry = { equals: filter.industry };
-  }
-  if (filter.q && filter.q.trim()) {
-    companyWhere.name = { contains: filter.q.trim() };
-  }
-  if (Object.keys(companyWhere).length > 0) {
-    where.company = companyWhere;
-  }
-
-  const total = await prisma.screeningResult.count({ where });
-  const totalPages = Math.ceil(total / filter.perPage);
-  const skip = (filter.page - 1) * filter.perPage;
-
   const rows = await prisma.screeningResult.findMany({
-    where,
+    where: { runId: run.id },
     include: {
       company: true,
     },
-    orderBy: [{ score: "desc" }, { coverage: "desc" }],
-    skip,
-    take: filter.perPage,
   });
+
+  const normalized = rows.map((row) => ({
+    ...row,
+    criteriaJson: row.criteriaJson as unknown as CriterionEvaluation[],
+    metricsJson: row.metricsJson as unknown as ScreeningMetrics,
+  }));
+
+  const industries = [...new Set(normalized.map((row) => row.company.industry).filter((value): value is string => !!value))].sort(
+    (a, b) => a.localeCompare(b, "ja-JP"),
+  );
+
+  const query = filter.q?.trim().toLowerCase() ?? "";
+  const industrySet = new Set((filter.industries ?? []).filter((value) => value.trim().length > 0));
+
+  const inRange = (value: number | null | undefined, min?: number, max?: number) => {
+    if (min == null && max == null) {
+      return true;
+    }
+    if (value == null || Number.isNaN(value)) {
+      return false;
+    }
+    if (min != null && value < min) {
+      return false;
+    }
+    if (max != null && value > max) {
+      return false;
+    }
+    return true;
+  };
+
+  const filtered = normalized.filter((row) => {
+    if (!inRange(row.score, filter.minScore, filter.maxScore)) {
+      return false;
+    }
+    if (!inRange(row.coverage, filter.minCoverage, filter.maxCoverage)) {
+      return false;
+    }
+    if (!inRange(row.pendingCount, filter.minPendingCount, filter.maxPendingCount)) {
+      return false;
+    }
+
+    if (typeof filter.gatePassed === "boolean" && row.gatePassed !== filter.gatePassed) {
+      return false;
+    }
+
+    if (industrySet.size > 0) {
+      const industry = row.company.industry ?? "";
+      if (!industrySet.has(industry)) {
+        return false;
+      }
+    }
+
+    if (query) {
+      const name = row.company.name.toLowerCase();
+      const secCode = row.company.secCode?.toLowerCase() ?? "";
+      const edinetCode = row.edinetCode.toLowerCase();
+      if (!name.includes(query) && !secCode.includes(query) && !edinetCode.includes(query)) {
+        return false;
+      }
+    }
+
+    if (!inRange(row.metricsJson.pbrEst, filter.minPbr, filter.maxPbr)) {
+      return false;
+    }
+    if (!inRange(row.metricsJson.priceToSales, filter.minPsr, filter.maxPsr)) {
+      return false;
+    }
+    if (!inRange(row.metricsJson.netCash, filter.minNetCash, filter.maxNetCash)) {
+      return false;
+    }
+    if (!inRange(row.metricsJson.maxDrawdownPct, filter.minDrawdownPct, filter.maxDrawdownPct)) {
+      return false;
+    }
+
+    return true;
+  });
+
+  const direction = filter.sortOrder === "asc" ? 1 : -1;
+
+  const compareNullable = (a: number | null | undefined, b: number | null | undefined) => {
+    if (a == null && b == null) {
+      return 0;
+    }
+    if (a == null) {
+      return 1;
+    }
+    if (b == null) {
+      return -1;
+    }
+    if (a === b) {
+      return 0;
+    }
+    return a < b ? -1 : 1;
+  };
+
+  filtered.sort((a, b) => {
+    let base = 0;
+    switch (filter.sortBy) {
+      case "coverage":
+        base = compareNullable(a.coverage, b.coverage);
+        break;
+      case "pendingCount":
+        base = compareNullable(a.pendingCount, b.pendingCount);
+        break;
+      case "companyName":
+        base = a.company.name.localeCompare(b.company.name, "ja-JP");
+        break;
+      case "gatePassed":
+        base = compareNullable(a.gatePassed ? 1 : 0, b.gatePassed ? 1 : 0);
+        break;
+      case "score":
+      default:
+        base = compareNullable(a.score, b.score);
+        break;
+    }
+
+    if (base !== 0) {
+      return base * direction;
+    }
+
+    const secondary = compareNullable(a.score, b.score);
+    if (secondary !== 0) {
+      return secondary * -1;
+    }
+
+    return a.company.name.localeCompare(b.company.name, "ja-JP");
+  });
+
+  const total = filtered.length;
+  const totalPages = total > 0 ? Math.ceil(total / filter.perPage) : 0;
+  const page = totalPages === 0 ? 1 : Math.min(Math.max(1, filter.page), totalPages);
+  const skip = (page - 1) * filter.perPage;
+  const paged = filtered.slice(skip, skip + filter.perPage);
 
   return {
     run,
     pagination: {
-      page: filter.page,
+      page,
       perPage: filter.perPage,
       total,
       totalPages,
     },
-    data: rows.map((row) => ({
-      ...row,
-      criteriaJson: row.criteriaJson as unknown as CriterionEvaluation[],
-      metricsJson: row.metricsJson as unknown as ScreeningMetrics,
-    })),
+    facets: {
+      industries,
+    },
+    data: paged,
   };
 }
 

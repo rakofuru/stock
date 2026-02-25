@@ -35,7 +35,6 @@ export default function RootLayout({
             <nav className="topbar-nav" aria-label="主要メニュー">
               <Link href="/screening">絞り込み検索</Link>
               <Link href="/settings">重み・条件設定</Link>
-              <Link href="/dashboard">収集ダッシュボード</Link>
             </nav>
           </header>
           <main className="page-shell">{children}</main>
